@@ -1,0 +1,356 @@
+{
+  "id": "asesor-trading-multi-agent-v1",
+  "name": "ASESOR DE TRADING — Multi-Agent AI",
+  "nodes": [
+    {
+      "id": "node-sticky-00",
+      "name": "INSTRUCCIONES DE CONFIGURACIÓN",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {
+        "width": 600,
+        "height": 240,
+        "color": 3,
+        "content": "## ASESOR DE TRADING — Variables de entorno requeridas\n\n**APIs de IA:**\n- `DEEPSEEK_API_KEY` — DeepSeek (Técnico, Sentimiento, Riesgo)\n- `ANTHROPIC_API_KEY` — Claude Opus/Sonnet (Fundamental, Estrategia, Decisión)\n\n**Datos de mercado:**\n- `SYMBOL` — Par de trading (ej: BTCUSDT)\n- `TIMEFRAME` — Intervalo (ej: 1h)\n- `NEWS_API_KEY` — NewsAPI.org\n\n**Ejecución:**\n- `BROKER_ORDER_URL` — Endpoint del broker\n- `BROKER_API_KEY` — Clave del broker\n- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — Notificaciones\n- `RISK_MAX_POSITION_USD` — Ej: 1000\n- `RISK_MAX_DRAWDOWN_PCT` — Ej: 2.5\n- `CONFIDENCE_THRESHOLD` — Ej: 0.55\n- `DRY_RUN` — `true` para modo simulación (recomendado al inicio)"
+      }
+    },
+    {
+      "id": "node-trigger-01",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 300],
+      "parameters": {}
+    },
+    {
+      "id": "node-config-02",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [220, 300],
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            { "name": "symbol",                "type": "string",  "stringValue":  "={{ $env.SYMBOL || 'BTCUSDT' }}" },
+            { "name": "timeframe",             "type": "string",  "stringValue":  "={{ $env.TIMEFRAME || '1h' }}" },
+            { "name": "limit",                 "type": "number",  "numberValue":  200 },
+            { "name": "risk_max_position_usd", "type": "number",  "numberValue":  "={{ Number($env.RISK_MAX_POSITION_USD) || 1000 }}" },
+            { "name": "risk_max_drawdown_pct", "type": "number",  "numberValue":  "={{ Number($env.RISK_MAX_DRAWDOWN_PCT) || 2.5 }}" },
+            { "name": "confidence_threshold",  "type": "number",  "numberValue":  "={{ Number($env.CONFIDENCE_THRESHOLD) || 0.55 }}" },
+            { "name": "dry_run",               "type": "boolean", "booleanValue": "={{ $env.DRY_RUN !== 'false' }}" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-market-03",
+      "name": "Market Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.binance.com/api/v3/klines?symbol={{ $json.symbol }}&interval={{ $json.timeframe }}&limit={{ $json.limit }}",
+        "options": {},
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "node-news-04",
+      "name": "News Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [440, 500],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://newsapi.org/v2/everything?q={{ $('Config').first().json.symbol.replace('USDT','').replace('BTC','Bitcoin') }}&sortBy=publishedAt&pageSize=20&language=en",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-Api-Key", "value": "={{ $env.NEWS_API_KEY }}" }
+          ]
+        },
+        "options": {},
+        "onError": "continueErrorOutput"
+      }
+    },
+    {
+      "id": "node-tech-05",
+      "name": "Agente Análisis Técnico",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 100],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// AGENTE ANÁLISIS TÉCNICO — DeepSeek V3 + indicadores locales\nconst cfg = $('Config').first().json;\nconst raw = $('Market Data').first().json;\nconst klines = Array.isArray(raw) ? raw : [];\nconst closes = klines.map(k => parseFloat(k[4]));\nconst highs  = klines.map(k => parseFloat(k[2]));\nconst lows   = klines.map(k => parseFloat(k[3]));\nconst vols   = klines.map(k => parseFloat(k[5]));\nconst price  = closes.at(-1) || 0;\n\n// Indicadores\nconst sma = (arr, n) => arr.length < n ? null : arr.slice(-n).reduce((a,b)=>a+b,0)/n;\nconst ema = (arr, n) => {\n  let k = 2/(n+1), e = arr[0];\n  for(let i=1;i<arr.length;i++) e = arr[i]*k + e*(1-k);\n  return e;\n};\nconst rsiCalc = (arr, n=14) => {\n  let g=0,l=0;\n  for(let i=arr.length-n;i<arr.length;i++){const d=arr[i]-arr[i-1]; d>0?g+=d:l-=d;}\n  return 100-100/(1+(g/n)/((l/n)||0.001));\n};\n\nconst sma20  = sma(closes, 20);\nconst sma50  = sma(closes, 50);\nconst sma200 = sma(closes, Math.min(200,closes.length));\nconst ema12  = ema(closes, 12);\nconst ema26  = ema(closes, 26);\nconst macd   = ema12 - ema26;\nconst rsi    = rsiCalc(closes);\nconst vol24  = vols.slice(-24).reduce((a,b)=>a+b,0);\nconst volAvg = vols.slice(-50).reduce((a,b)=>a+b,0)/50;\nconst volRatio = vol24/((volAvg*24)||1);\n\n// Señal local\nlet signal='HOLD', confidence=0.5;\nif(price>sma20 && sma20>sma50 && rsi<70 && macd>0){signal='BUY'; confidence=0.65+(rsi<60?.05:0)+(volRatio>1.2?.05:0);}\nelse if(price<sma20 && sma20<sma50 && rsi>30 && macd<0){signal='SELL'; confidence=0.65+(rsi>40?.05:0)+(volRatio>1.2?.05:0);}\n\nlet summary = `Precio $${price.toFixed(2)} | SMA20=${sma20?.toFixed(0)} SMA50=${sma50?.toFixed(0)} | RSI=${rsi.toFixed(1)} | MACD=${macd.toFixed(2)} | Vol ratio=${volRatio.toFixed(2)}`;\n\ntry {\n  const res = await fetch('https://api.deepseek.com/v1/chat/completions', {\n    method:'POST',\n    headers:{'Authorization':`Bearer ${$env.DEEPSEEK_API_KEY}`,'Content-Type':'application/json'},\n    body: JSON.stringify({\n      model:'deepseek-chat',\n      messages:[{role:'user',content:`Eres AGENTE ANÁLISIS TÉCNICO crypto experto. Símbolo: ${cfg.symbol} precio $${price.toFixed(2)}. Indicadores: SMA20=${sma20?.toFixed(0)}, SMA50=${sma50?.toFixed(0)}, SMA200=${sma200?.toFixed(0)}, RSI=${rsi.toFixed(1)}, MACD=${macd.toFixed(4)}, Volumen ratio=${volRatio.toFixed(2)}. Señal preliminar: ${signal}. Analiza y confirma. Responde SOLO en JSON: {\"signal\":\"BUY|SELL|HOLD\",\"confidence\":0.0-1.0,\"summary\":\"texto\",\"support\":numero,\"resistance\":numero}`}],\n      max_tokens:400,temperature:0.1,response_format:{type:'json_object'}\n    })\n  });\n  const d = await res.json();\n  const ai = JSON.parse(d.choices[0].message.content);\n  signal=ai.signal||signal; confidence=ai.confidence||confidence; summary=ai.summary||summary;\n} catch(e) { summary += ` [IA no disponible: ${e.message}]`; }\n\nreturn [{json:{agent:'ANÁLISIS_TÉCNICO',model:'DeepSeek-V3 + indicadores',signal,confidence,summary,indicators:{price,sma20,sma50,sma200,rsi,macd,volRatio}}}];"
+      }
+    },
+    {
+      "id": "node-fund-06",
+      "name": "Agente Análisis Fundamental",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// AGENTE ANÁLISIS FUNDAMENTAL — Claude Opus 4.6\nconst cfg   = $('Config').first().json;\nconst raw   = $('Market Data').first().json;\nconst klines = Array.isArray(raw) ? raw : [];\nconst price = parseFloat(klines.at(-1)?.[4] || 0);\nconst name  = cfg.symbol.replace('USDT','').replace('BTC','Bitcoin').replace('ETH','Ethereum');\n\nconst prompt = `Eres AGENTE ANÁLISIS FUNDAMENTAL experto en criptoactivos.\\n\\nActivo: ${name} (${cfg.symbol}) — Precio actual: $${price.toFixed(2)}\\n\\nAnaliza considerando:\\n1. Capitalización de mercado y posición competitiva\\n2. Utilidad real y adopción del protocolo\\n3. Actividad de desarrollo (commits, actualizaciones)\\n4. Adopción institucional y flujos de capital\\n5. Ciclo macro: tasas de interés, DXY, correlación con mercados tradicionales\\n6. Contexto regulatorio global\\n7. Métricas on-chain relevantes\\n\\nResponde SOLO en JSON:\\n{\"signal\":\"BUY|SELL|HOLD\",\"confidence\":0.0-1.0,\"summary\":\"2-3 oraciones\",\"catalysts\":[\"...\"],\"risks\":[\"...\"],\"macro_bias\":\"BULLISH|BEARISH|NEUTRAL\"}`;\n\nlet result = {signal:'HOLD',confidence:0.5,summary:'API Anthropic no disponible',catalysts:[],risks:[],macro_bias:'NEUTRAL'};\ntry {\n  const res = await fetch('https://api.anthropic.com/v1/messages', {\n    method:'POST',\n    headers:{'x-api-key':$env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Type':'application/json'},\n    body: JSON.stringify({model:'claude-opus-4-6',max_tokens:600,messages:[{role:'user',content:prompt}]})\n  });\n  const d = await res.json();\n  const text = d.content[0].text;\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  if(m) result = JSON.parse(m[0]);\n} catch(e) { result.summary = `Error: ${e.message}`; }\n\nreturn [{json:{agent:'ANÁLISIS_FUNDAMENTAL',model:'Claude Opus 4.6',...result}}];"
+      }
+    },
+    {
+      "id": "node-sent-07",
+      "name": "Agente Sentimiento Mercado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 500],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// AGENTE SENTIMIENTO MERCADO — DeepSeek + FinBERT approach + NewsAPI\nconst cfg      = $('Config').first().json;\nconst newsRaw  = $('News Data').first().json;\nconst articles = newsRaw?.articles || [];\nconst headlines = articles.slice(0,15).map(a=>`- ${a.title} (${a.source?.name||'?'})`).join('\\n') || 'Sin noticias disponibles';\n\nconst prompt = `Eres AGENTE SENTIMIENTO DE MERCADO especializado en crypto.\\n\\nSímbolo: ${cfg.symbol}\\n\\nNoticias recientes (${articles.length} artículos):\\n${headlines}\\n\\nAnaliza el sentimiento general del mercado para este activo considerando:\\n- Tono de noticias (positivo/negativo/neutro)\\n- Eventos macro relevantes\\n- Narrativas dominantes en la comunidad\\n- Fear & Greed implícito\\n- Riesgo de volatilidad por noticias\\n\\nResponde SOLO en JSON:\\n{\"signal\":\"BUY|SELL|HOLD\",\"confidence\":0.0-1.0,\"sentiment_score\":-1.0-1.0,\"summary\":\"texto\",\"dominant_narratives\":[\"...\"],\"fear_greed\":\"EXTREME_FEAR|FEAR|NEUTRAL|GREED|EXTREME_GREED\",\"news_risk\":\"LOW|MEDIUM|HIGH\"}`;\n\nlet result = {signal:'HOLD',confidence:0.5,sentiment_score:0,summary:'API no disponible',dominant_narratives:[],fear_greed:'NEUTRAL',news_risk:'MEDIUM'};\ntry {\n  const res = await fetch('https://api.deepseek.com/v1/chat/completions', {\n    method:'POST',\n    headers:{'Authorization':`Bearer ${$env.DEEPSEEK_API_KEY}`,'Content-Type':'application/json'},\n    body: JSON.stringify({\n      model:'deepseek-chat',\n      messages:[{role:'user',content:prompt}],\n      max_tokens:500,temperature:0.2,response_format:{type:'json_object'}\n    })\n  });\n  const d = await res.json();\n  result = JSON.parse(d.choices[0].message.content);\n} catch(e) { result.summary = `Error: ${e.message}`; }\n\nreturn [{json:{agent:'SENTIMIENTO_MERCADO',model:'DeepSeek-V3 + NewsAPI',...result,articles_analyzed:articles.length}}];"
+      }
+    },
+    {
+      "id": "node-merge-08",
+      "name": "Merge Análisis",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [900, 300],
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-risk-09",
+      "name": "Agente Evaluación Riesgo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// AGENTE EVALUACIÓN RIESGO — DeepSeek R1\nconst cfg = $('Config').first().json;\nconst items = $input.all().map(i=>i.json);\n\n// Indexar agentes\nconst agents = {};\nfor(const r of items) if(r.agent) agents[r.agent] = r;\n\n// Estadísticas de votos\nconst signals = items.filter(r=>r.signal&&r.confidence);\nconst bySignal = {BUY:0,SELL:0,HOLD:0};\nlet weightedConf = 0, totalW = 0;\nfor(const s of signals){\n  bySignal[s.signal] = (bySignal[s.signal]||0)+1;\n  weightedConf += (s.confidence||0);\n  totalW++;\n}\nconst avgConf = totalW>0 ? weightedConf/totalW : 0;\nconst dominant = Object.entries(bySignal).sort((a,b)=>b[1]-a[1])[0][0];\n\nconst prompt = `Eres AGENTE EVALUACIÓN DE RIESGO para trading algorítmico de crypto.\\n\\nConsenso de agentes:\\n${JSON.stringify(signals.map(s=>({agente:s.agent,señal:s.signal,confianza:s.confidence})),null,2)}\\n\\nVotos: BUY=${bySignal.BUY} SELL=${bySignal.SELL} HOLD=${bySignal.HOLD}\\nConfianza promedio: ${avgConf.toFixed(3)}\\nSeñal dominante: ${dominant}\\n\\nParámetros de riesgo configurados:\\n- Posición máxima: $${cfg.risk_max_position_usd}\\n- Drawdown máximo: ${cfg.risk_max_drawdown_pct}%\\n- Umbral de confianza: ${cfg.confidence_threshold}\\n\\nEvalúa si proceder. Si la confianza promedio < ${cfg.confidence_threshold}, rechaza.\\nCalcula el tamaño de posición apropiado considerando el riesgo.\\n\\nResponde SOLO en JSON:\\n{\"approved\":true|false,\"risk_level\":\"LOW|MEDIUM|HIGH|CRITICAL\",\"position_size_usd\":0,\"reason\":\"texto\",\"warnings\":[\"...\"],\"max_loss_usd\":0}`;\n\nlet risk = {approved:false,risk_level:'HIGH',position_size_usd:0,reason:'API no disponible',warnings:[],max_loss_usd:0};\ntry {\n  const res = await fetch('https://api.deepseek.com/v1/chat/completions', {\n    method:'POST',\n    headers:{'Authorization':`Bearer ${$env.DEEPSEEK_API_KEY}`,'Content-Type':'application/json'},\n    body: JSON.stringify({\n      model:'deepseek-reasoner',\n      messages:[{role:'user',content:prompt}],\n      max_tokens:700,temperature:0\n    })\n  });\n  const d = await res.json();\n  const text = d.choices[0].message.content;\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  if(m) risk = JSON.parse(m[0]);\n} catch(e) { risk.reason = `Error: ${e.message}`; }\n\n// Hard overrides de seguridad\nif(avgConf < cfg.confidence_threshold){\n  risk.approved = false;\n  risk.warnings = [...(risk.warnings||[]), `Confianza ${avgConf.toFixed(2)} < umbral ${cfg.confidence_threshold}`];\n}\nif((risk.position_size_usd||0) > cfg.risk_max_position_usd){\n  risk.position_size_usd = cfg.risk_max_position_usd;\n  risk.warnings = [...(risk.warnings||[]), `Posición recortada al máximo $${cfg.risk_max_position_usd}`];\n}\n\nreturn [{json:{agent:'EVALUACIÓN_RIESGO',model:'DeepSeek-R1',...risk,vote_summary:{buyVotes:bySignal.BUY,sellVotes:bySignal.SELL,holdVotes:bySignal.HOLD,avgConf:parseFloat(avgConf.toFixed(3)),dominant},all_agents:agents,config:cfg}}];"
+      }
+    },
+    {
+      "id": "node-strat-10",
+      "name": "Agente Estrategia",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// AGENTE ESTRATEGIA — Claude Sonnet 4.6\nconst risk    = $input.first().json;\nconst cfg     = risk.config || {};\nconst agents  = risk.all_agents || {};\nconst tech    = agents['ANÁLISIS_TÉCNICO'] || {};\nconst fund    = agents['ANÁLISIS_FUNDAMENTAL'] || {};\nconst sent    = agents['SENTIMIENTO_MERCADO'] || {};\n\nconst prompt = `Eres AGENTE DE ESTRATEGIA de trading — defines la estrategia de ejecución concreta.\\n\\nSímbolo: ${cfg.symbol}\\nModo: ${cfg.dry_run?'SIMULACIÓN (DRY RUN)':'PRODUCCIÓN — operación real'}\\n\\nResumen de análisis:\\n- Técnico (${tech.signal}, confianza ${tech.confidence}): ${tech.summary}\\n- Fundamental (${fund.signal}, confianza ${fund.confidence}): ${fund.summary}\\n- Sentimiento (${sent.signal}, confianza ${sent.confidence}): ${sent.summary}\\n\\nEvaluación de riesgo: ${risk.approved?'APROBADO':'RECHAZADO'} — Nivel: ${risk.risk_level}\\nPresupuesto aprobado: $${risk.position_size_usd}\\nRazón de riesgo: ${risk.reason}\\n\\nPrecio actual estimado: $${tech.indicators?.price||0}\\nSoporte: ${tech.indicators?.sma50||0} | Resistencia: ${tech.indicators?.sma20||0}\\n\\nDefine la estrategia óptima. Si el riesgo NO fue aprobado, la acción debe ser HOLD.\\n\\nResponde SOLO en JSON:\\n{\"action\":\"BUY|SELL|HOLD\",\"order_type\":\"MARKET|LIMIT\",\"entry_price\":0,\"stop_loss\":0,\"take_profit\":0,\"risk_reward_ratio\":0,\"position_size_usd\":0,\"strategy_name\":\"nombre\",\"rationale\":\"texto\"}`;\n\nlet strat = {action:'HOLD',order_type:'MARKET',entry_price:tech.indicators?.price||0,stop_loss:0,take_profit:0,risk_reward_ratio:0,position_size_usd:0,strategy_name:'Sin estrategia',rationale:'API no disponible'};\ntry {\n  const res = await fetch('https://api.anthropic.com/v1/messages', {\n    method:'POST',\n    headers:{'x-api-key':$env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Type':'application/json'},\n    body: JSON.stringify({model:'claude-sonnet-4-6',max_tokens:700,messages:[{role:'user',content:prompt}]})\n  });\n  const d = await res.json();\n  const text = d.content[0].text;\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  if(m) strat = JSON.parse(m[0]);\n} catch(e) { strat.rationale = `Error: ${e.message}`; }\n\n// Safety: override si riesgo rechazado\nif(!risk.approved){ strat.action='HOLD'; strat.rationale=`Riesgo rechazado: ${risk.reason}`; }\nif((strat.position_size_usd||0) > (risk.position_size_usd||0)) strat.position_size_usd = risk.position_size_usd;\n\nreturn [{json:{agent:'ESTRATEGIA',model:'Claude Sonnet 4.6',...strat,risk_approved:risk.approved,risk_level:risk.risk_level,risk_warnings:risk.warnings,vote_summary:risk.vote_summary,all_agents:agents,config:cfg}}];"
+      }
+    },
+    {
+      "id": "node-final-11",
+      "name": "Agente Decisión Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// AGENTE DECISIÓN FINAL — ASESOR DE TRADING — Claude Opus 4.6\nconst strat  = $input.first().json;\nconst cfg    = strat.config || {};\nconst agents = strat.all_agents || {};\n\nconst prompt = `Eres el ASESOR DE TRADING — agente de decisión final con máxima autoridad.\\n\\nTu trabajo: revisar todo el análisis y tomar la decisión definitiva de operación.\\nPuedes confirmar, modificar o vetar cualquier propuesta anterior.\\n\\nSímbolo: ${cfg.symbol} | Modo: ${cfg.dry_run?'SIMULACIÓN':'PRODUCCIÓN'}\\n\\n=== ESTRATEGIA PROPUESTA ===\\nAcción: ${strat.action} | Tipo orden: ${strat.order_type}\\nEntrada: $${strat.entry_price} | SL: $${strat.stop_loss} | TP: $${strat.take_profit}\\nTamaño: $${strat.position_size_usd} | R:R = ${strat.risk_reward_ratio}\\nEstrategia: ${strat.strategy_name}\\nRationale: ${strat.rationale}\\n\\n=== CONTEXTO DE AGENTES ===\\nTécnico: ${agents.ANÁLISIS_TÉCNICO?.summary}\\nFundamental: ${agents.ANÁLISIS_FUNDAMENTAL?.summary}\\nSentimiento: ${agents.SENTIMIENTO_MERCADO?.summary}\\nVotos: ${JSON.stringify(strat.vote_summary)}\\n\\n=== RIESGO ===\\nAprobado: ${strat.risk_approved} | Nivel: ${strat.risk_level}\\nAdvertencias: ${JSON.stringify(strat.risk_warnings)}\\n\\nDECIDES TÚ. Si todo es coherente, confirma. Si detectas inconsistencias o riesgo excesivo, corrige o cancela.\\nEl campo dry_run DEBE ser ${cfg.dry_run} (no lo cambies).\\n\\nResponde SOLO en JSON:\\n{\"decision\":\"BUY|SELL|HOLD\",\"final_action\":{\"type\":\"MARKET|LIMIT\",\"symbol\":\"${cfg.symbol}\",\"side\":\"buy|sell|none\",\"quantity_usd\":0,\"price\":0,\"stop_loss\":0,\"take_profit\":0},\"confidence\":0.0-1.0,\"dry_run\":${cfg.dry_run},\"executive_summary\":\"texto\",\"key_reasons\":[\"...\"]}`;\n\nlet decision = {\n  decision:'HOLD',\n  final_action:{type:'MARKET',symbol:cfg.symbol||'BTCUSDT',side:'none',quantity_usd:0,price:strat.entry_price||0,stop_loss:strat.stop_loss||0,take_profit:strat.take_profit||0},\n  confidence:0,dry_run:cfg.dry_run!==false,\n  executive_summary:'API no disponible — operación cancelada por seguridad',\n  key_reasons:['API Anthropic no respondió']\n};\ntry {\n  const res = await fetch('https://api.anthropic.com/v1/messages', {\n    method:'POST',\n    headers:{'x-api-key':$env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Type':'application/json'},\n    body: JSON.stringify({model:'claude-opus-4-6',max_tokens:800,messages:[{role:'user',content:prompt}]})\n  });\n  const d = await res.json();\n  const text = d.content[0].text;\n  const m = text.match(/\\{[\\s\\S]*\\}/);\n  if(m) decision = JSON.parse(m[0]);\n} catch(e) { decision.executive_summary = `Error: ${e.message}`; }\n\n// Forzar dry_run desde config — seguridad absoluta\ndecision.dry_run = cfg.dry_run !== false;\ndecision.final_action = decision.final_action || {};\ndecision.final_action.symbol = cfg.symbol;\ndecision.timestamp = new Date().toISOString();\ndecision.workflow_id = `AT-${Date.now()}`;\n\nreturn [{json:{agent:'DECISIÓN_FINAL',model:'Claude Opus 4.6',...decision}}];"
+      }
+    },
+    {
+      "id": "node-route-12",
+      "name": "Enrutar Decisión",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1780, 300],
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "BUY",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "0"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.decision }}",
+                    "rightValue": "SELL",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "1"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      }
+    },
+    {
+      "id": "node-buy-13",
+      "name": "Ejecutar BUY",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 100],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// EJECUTAR ORDEN BUY\nconst dec = $input.first().json;\nconst fa  = dec.final_action || {};\n\nconst orderPayload = {\n  symbol: fa.symbol,\n  side: 'BUY',\n  type: fa.type || 'MARKET',\n  quoteOrderQty: fa.quantity_usd,\n  price: fa.type==='LIMIT' ? fa.price : undefined,\n  stopLoss: fa.stop_loss,\n  takeProfit: fa.take_profit,\n  timestamp: dec.timestamp,\n  workflow_id: dec.workflow_id,\n  dry_run: dec.dry_run\n};\n\nlet orderResult = {status:'DRY_RUN',order_id:'SIM-'+Date.now(),filled:false,message:'Modo simulación activo'};\n\nif(!dec.dry_run){\n  try {\n    const res = await fetch($env.BROKER_ORDER_URL, {\n      method:'POST',\n      headers:{'Authorization':`Bearer ${$env.BROKER_API_KEY}`,'Content-Type':'application/json'},\n      body: JSON.stringify(orderPayload)\n    });\n    orderResult = await res.json();\n  } catch(e){ orderResult = {status:'ERROR',message:e.message,filled:false}; }\n} else {\n  orderResult.message = `[DRY RUN] BUY $${fa.quantity_usd} de ${fa.symbol} @ ${fa.type} — NO ejecutada`;\n}\n\nreturn [{json:{...dec,order_type:'BUY',order_payload:orderPayload,order_result:orderResult,action_taken:dec.dry_run?'DRY_RUN_BUY':'EXECUTED_BUY'}}];"
+      }
+    },
+    {
+      "id": "node-sell-14",
+      "name": "Ejecutar SELL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2000, 500],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// EJECUTAR ORDEN SELL\nconst dec = $input.first().json;\nconst fa  = dec.final_action || {};\n\nconst orderPayload = {\n  symbol: fa.symbol,\n  side: 'SELL',\n  type: fa.type || 'MARKET',\n  quoteOrderQty: fa.quantity_usd,\n  price: fa.type==='LIMIT' ? fa.price : undefined,\n  stopLoss: fa.stop_loss,\n  takeProfit: fa.take_profit,\n  timestamp: dec.timestamp,\n  workflow_id: dec.workflow_id,\n  dry_run: dec.dry_run\n};\n\nlet orderResult = {status:'DRY_RUN',order_id:'SIM-'+Date.now(),filled:false,message:'Modo simulación activo'};\n\nif(!dec.dry_run){\n  try {\n    const res = await fetch($env.BROKER_ORDER_URL, {\n      method:'POST',\n      headers:{'Authorization':`Bearer ${$env.BROKER_API_KEY}`,'Content-Type':'application/json'},\n      body: JSON.stringify(orderPayload)\n    });\n    orderResult = await res.json();\n  } catch(e){ orderResult = {status:'ERROR',message:e.message,filled:false}; }\n} else {\n  orderResult.message = `[DRY RUN] SELL $${fa.quantity_usd} de ${fa.symbol} @ ${fa.type} — NO ejecutada`;\n}\n\nreturn [{json:{...dec,order_type:'SELL',order_payload:orderPayload,order_result:orderResult,action_taken:dec.dry_run?'DRY_RUN_SELL':'EXECUTED_SELL'}}];"
+      }
+    },
+    {
+      "id": "node-hold-15",
+      "name": "HOLD — Sin Acción",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [2000, 300],
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            { "name": "order_type",   "type": "string",  "stringValue": "HOLD" },
+            { "name": "action_taken", "type": "string",  "stringValue": "NO_ACTION" },
+            { "name": "order_result", "type": "object",  "objectValue": "={{ {status:'HOLD',message:'Sin acción — señal HOLD o riesgo rechazado'} }}" }
+          ]
+        },
+        "includeOtherFields": true
+      }
+    },
+    {
+      "id": "node-merge-post-16",
+      "name": "Merge Post-Acción",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2220, 300],
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-notify-17",
+      "name": "Notificador Telegram",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2440, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// NOTIFICADOR — Telegram\nconst d = $input.first().json;\nconst fa = d.final_action || {};\nconst emoji = {BUY:'🟢',SELL:'🔴',HOLD:'⚪'}[d.decision] || '⚪';\nconst dryTag = d.dry_run ? ' [SIMULACIÓN]' : '';\n\nconst lines = [\n  `${emoji} *ASESOR DE TRADING${dryTag}*`,\n  `\\`${d.workflow_id}\\` | ${d.timestamp}`,\n  ``,\n  `*Decisión: ${d.decision}* (confianza: ${((d.confidence||0)*100).toFixed(0)}%)`,\n  `Símbolo: ${fa.symbol}`,\n  d.decision!=='HOLD' ? `Tamaño: $${fa.quantity_usd} | Tipo: ${fa.type}` : '',\n  d.decision!=='HOLD' ? `SL: $${fa.stop_loss} | TP: $${fa.take_profit}` : '',\n  ``,\n  `*Resumen ejecutivo:*`,\n  d.executive_summary,\n  ``,\n  `*Razones clave:*`,\n  (d.key_reasons||[]).map(r=>`• ${r}`).join('\\n'),\n  ``,\n  `*Estado orden:* ${d.order_result?.status||'?'} — ${d.order_result?.message||''}`,\n  ``,\n  `_Análisis: ${d.vote_summary ? `BUY:${d.vote_summary.buyVotes} SELL:${d.vote_summary.sellVotes} HOLD:${d.vote_summary.holdVotes} conf:${d.vote_summary.avgConf}` : 'N/A'}_`\n].filter(l=>l!==undefined);\n\nconst text = lines.join('\\n').substring(0,4000);\n\ntry {\n  await fetch(`https://api.telegram.org/bot${$env.TELEGRAM_BOT_TOKEN}/sendMessage`, {\n    method:'POST',\n    headers:{'Content-Type':'application/json'},\n    body: JSON.stringify({chat_id:$env.TELEGRAM_CHAT_ID,text,parse_mode:'Markdown'})\n  });\n} catch(e){ console.log('Telegram error:', e.message); }\n\nreturn [{json:{...d,notification_sent:true,notification_text:text}}];"
+      }
+    },
+    {
+      "id": "node-error-trigger-18",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 600],
+      "parameters": {}
+    },
+    {
+      "id": "node-notify-error-19",
+      "name": "Notificar Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 600],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: `🔴 *ERROR — ASESOR DE TRADING*\\n\\nWorkflow: ${$json.workflow?.name}\\nNodo: ${$json.node?.name}\\nError: ${$json.error?.message}\\nHora: ${new Date().toISOString()}`, parse_mode: 'Markdown' }) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Config", "type": "main", "index": 0 }]]
+    },
+    "Config": {
+      "main": [[
+        { "node": "Market Data", "type": "main", "index": 0 },
+        { "node": "News Data",   "type": "main", "index": 0 }
+      ]]
+    },
+    "Market Data": {
+      "main": [[
+        { "node": "Agente Análisis Técnico",       "type": "main", "index": 0 },
+        { "node": "Agente Análisis Fundamental",   "type": "main", "index": 0 }
+      ]]
+    },
+    "News Data": {
+      "main": [[
+        { "node": "Agente Sentimiento Mercado", "type": "main", "index": 0 }
+      ]]
+    },
+    "Agente Análisis Técnico": {
+      "main": [[{ "node": "Merge Análisis", "type": "main", "index": 0 }]]
+    },
+    "Agente Análisis Fundamental": {
+      "main": [[{ "node": "Merge Análisis", "type": "main", "index": 1 }]]
+    },
+    "Agente Sentimiento Mercado": {
+      "main": [[{ "node": "Merge Análisis", "type": "main", "index": 2 }]]
+    },
+    "Merge Análisis": {
+      "main": [[{ "node": "Agente Evaluación Riesgo", "type": "main", "index": 0 }]]
+    },
+    "Agente Evaluación Riesgo": {
+      "main": [[{ "node": "Agente Estrategia", "type": "main", "index": 0 }]]
+    },
+    "Agente Estrategia": {
+      "main": [[{ "node": "Agente Decisión Final", "type": "main", "index": 0 }]]
+    },
+    "Agente Decisión Final": {
+      "main": [[{ "node": "Enrutar Decisión", "type": "main", "index": 0 }]]
+    },
+    "Enrutar Decisión": {
+      "main": [
+        [{ "node": "Ejecutar BUY",       "type": "main", "index": 0 }],
+        [{ "node": "Ejecutar SELL",      "type": "main", "index": 0 }],
+        [{ "node": "HOLD — Sin Acción",  "type": "main", "index": 0 }]
+      ]
+    },
+    "Ejecutar BUY": {
+      "main": [[{ "node": "Merge Post-Acción", "type": "main", "index": 0 }]]
+    },
+    "Ejecutar SELL": {
+      "main": [[{ "node": "Merge Post-Acción", "type": "main", "index": 1 }]]
+    },
+    "HOLD — Sin Acción": {
+      "main": [[{ "node": "Merge Post-Acción", "type": "main", "index": 2 }]]
+    },
+    "Merge Post-Acción": {
+      "main": [[{ "node": "Notificador Telegram", "type": "main", "index": 0 }]]
+    },
+    "Error Trigger": {
+      "main": [[{ "node": "Notificar Error", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "pinData": {}
+}
