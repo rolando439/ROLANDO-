@@ -1,0 +1,49 @@
+{
+  "name": "App_Recetas_Siguaraya - Multiagente Novita",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "recetas-siguaraya",
+        "httpMethod": "POST",
+        "responseMode": "responseNode"
+      },
+      "name": "Webhook Recetas",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/recipes/workflow",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}"
+      },
+      "name": "Ejecutar Multiagente IA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [560, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}"
+      },
+      "name": "Responder a App",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [870, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Recetas": {
+      "main": [[{"node": "Ejecutar Multiagente IA", "type": "main", "index": 0}]]
+    },
+    "Ejecutar Multiagente IA": {
+      "main": [[{"node": "Responder a App", "type": "main", "index": 0}]]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "2"
+}
