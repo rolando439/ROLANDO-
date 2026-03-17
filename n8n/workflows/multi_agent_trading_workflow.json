@@ -22,7 +22,10 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ $json.body }}",
-        "options": {}
+        "options": {},
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "{\"Content-Type\":\"application/json\"}"
       },
       "name": "Call Multi-Agent API",
       "type": "n8n-nodes-base.httpRequest",
