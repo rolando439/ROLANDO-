@@ -35,6 +35,7 @@ curl -X POST http://localhost:8000/trade/decision \
 ## Integración con n8n
 
 1. Importa `n8n/workflows/multi_agent_trading_workflow.json`.
-2. Publica la API Python para que n8n pueda accederla.
-3. Envía un `POST` al webhook de n8n `/webhook/trading-signal` con el body de mercado.
-4. n8n reenvía el payload al endpoint `/trade/decision` y devuelve la respuesta final.
+2. Verifica en el nodo **Call Multi-Agent API** que el método HTTP esté en `POST` (este repo ya lo define explícitamente para evitar conflictos al importar).
+3. Publica la API Python para que n8n pueda accederla.
+4. Envía un `POST` al webhook de n8n `/webhook/trading-signal` con el body de mercado.
+5. n8n reenvía el payload al endpoint `/trade/decision` y devuelve la respuesta final.
