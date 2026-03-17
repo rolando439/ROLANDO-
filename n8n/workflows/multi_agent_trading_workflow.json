@@ -17,6 +17,7 @@
     },
     {
       "parameters": {
+        "method": "POST",
         "url": "http://host.docker.internal:8000/trade/decision",
         "sendBody": true,
         "specifyBody": "json",
